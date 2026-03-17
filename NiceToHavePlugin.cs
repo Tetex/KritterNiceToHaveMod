@@ -10,6 +10,8 @@ using LJF.Game.Entities;
 using System.IO;
 using System.Xml.Linq;
 using UnityEngine.SceneManagement;
+using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.LowLevel;
 
 namespace KritterNiceToHavePlugin;
 
@@ -26,6 +28,7 @@ public class NiceToHavePlugin : BaseUnityPlugin
     public static ConfigEntry<Color> CrosshairColor;
     public static ConfigEntry<bool> LockCursorInWindow;
     public static ConfigEntry<bool> PopupBeforeLeave;
+    public static ConfigEntry<bool> EnableAutoLoot;
 
     private void Awake()
     {
@@ -37,6 +40,7 @@ public class NiceToHavePlugin : BaseUnityPlugin
         CrosshairColor = Config.Bind<Color>("Cursor", "CrosshairColor", Color.darkBlue, "Color of the ingame crosshair");
         LockCursorInWindow = Config.Bind<bool>("Cursor", "LockCursorInWindow", true, "Lock cursor inside the window");
         PopupBeforeLeave = Config.Bind<bool>("Ingame Menu", "PopupBeforeLeave", true, "Show a confirmation popup before leaving");
+        EnableAutoLoot = Config.Bind<bool>("Loot", "EnableAutoLoot", true, "Auto loot items (except potions and probably boss items etc...)");
 
         SceneManager.sceneLoaded += OnSceneLoaded;
 
@@ -125,6 +129,27 @@ public class NiceToHavePlugin : BaseUnityPlugin
 
         tex.SetPixels(pixels);
         tex.Apply();
+    }
+
+    public static void FakeInput(InputDevice device, string controlName, float inputVal)
+    {
+        if (device == null)
+        {
+            return;
+        }
+
+        var control = device[controlName];
+        if (control == null) 
+        { 
+            return; 
+        }
+
+        using (StateEvent.From(device, out var stateEvent))
+        {
+            control.WriteValueIntoEvent<float>(inputVal, stateEvent);
+
+            InputSystem.QueueEvent(stateEvent);
+        }
     }
 }
 
@@ -224,5 +249,37 @@ public static class MenuControllerPatch
 
         shouldLeave = false;
         return true;
+    }
+}
+
+[HarmonyPatch(typeof(PlayerActionsController))]
+public static class PlayerActionsControllerPatch
+{
+    private static bool _isPressingFakePickupKey = false;
+    [HarmonyPatch("Update")]
+    [HarmonyPostfix]
+    public static void PostUpdateFix(ref PlayerActionsController __instance)
+    {
+        if (NiceToHavePlugin.EnableAutoLoot.Value)
+        {
+            if (_isPressingFakePickupKey)
+            {
+                NiceToHavePlugin.FakeInput(Keyboard.current, "e", 0);
+                _isPressingFakePickupKey = false;
+            }
+
+            ActionDetector actionDetector = __instance.GetComponent<ActionDetector>();
+            ActivableBehaviour currentActivable = actionDetector.GetCurrentActivable();
+            if (currentActivable != null)
+            {
+                // TODO: see if we want to take "Potion" (maybe when life is low)
+                if (currentActivable.name.Contains("PowerUp") || currentActivable.name.Contains("Stat"))
+                {
+                    NiceToHavePlugin.FakeInput(Keyboard.current, "e", 1);
+
+                    _isPressingFakePickupKey = true;
+                }
+            }
+        }
     }
 }
