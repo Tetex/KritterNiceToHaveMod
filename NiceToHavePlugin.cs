@@ -4,14 +4,15 @@ using BepInEx.Configuration;
 using UnityEngine;
 using HarmonyLib;
 using LJF.UI;
-using System.Reflection;
-using System;
 using LJF.Game.Entities;
-using System.IO;
-using System.Xml.Linq;
-using UnityEngine.SceneManagement;
+using LJF.Game.Managers;
+using LJF.Models;
+using System.Collections.Generic;
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.LowLevel;
+using UnityEngine.SceneManagement;
+
+
 
 namespace KritterNiceToHavePlugin;
 
@@ -19,16 +20,23 @@ namespace KritterNiceToHavePlugin;
 public class NiceToHavePlugin : BaseUnityPlugin
 {
     internal static new ManualLogSource Logger;
+
+    // Cursor textures
     static Texture2D crosshairTexture = null;
     static Texture2D menuCursor = null;
+
     static bool isInGame = false;
 
-    //Config
+    // Used to get the BuildingSlot from the BuildingsManager
+    public static BuildingSlot CurrentBuildingSlot = null;
+
+    // Config
     public static ConfigEntry<bool> EnableCrosshair;
     public static ConfigEntry<Color> CrosshairColor;
     public static ConfigEntry<bool> LockCursorInWindow;
     public static ConfigEntry<bool> PopupBeforeLeave;
     public static ConfigEntry<bool> EnableAutoLoot;
+    public static ConfigEntry<bool> FixPreviewBuildingDisplay;
 
     private void Awake()
     {
@@ -41,6 +49,7 @@ public class NiceToHavePlugin : BaseUnityPlugin
         LockCursorInWindow = Config.Bind<bool>("Cursor", "LockCursorInWindow", true, "Lock cursor inside the window");
         PopupBeforeLeave = Config.Bind<bool>("Ingame Menu", "PopupBeforeLeave", true, "Show a confirmation popup before leaving");
         EnableAutoLoot = Config.Bind<bool>("Loot", "EnableAutoLoot", true, "Auto loot items (except potions and probably boss items etc...)");
+        FixPreviewBuildingDisplay = Config.Bind<bool>("Building", "FixPreviewBuildingDisplay", true, "Show green preview if one of the buildings can be built instead of just checking the first building of the list.");
 
         SceneManager.sceneLoaded += OnSceneLoaded;
 
@@ -50,6 +59,7 @@ public class NiceToHavePlugin : BaseUnityPlugin
 
     private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
     {
+        // Storing cursor textures when we can retrieve them
         if (crosshairTexture == null || menuCursor == null)
         {
             Texture2D[] textures = Resources.FindObjectsOfTypeAll<Texture2D>();
@@ -68,6 +78,7 @@ public class NiceToHavePlugin : BaseUnityPlugin
             }
         }
 
+        // Updating cursor texture according to the level loaded
         isInGame = scene.name.Contains("Game");
 
         if (isInGame && crosshairTexture && EnableCrosshair.Value)
@@ -84,6 +95,7 @@ public class NiceToHavePlugin : BaseUnityPlugin
 
     void Update()
     {
+        // Force cursor lock (not ideal to do it in update() but keyboard inputs seems to reset it ¯\_(ツ)_/¯)
         if (NiceToHavePlugin.isInGame && NiceToHavePlugin.LockCursorInWindow.Value)
         {
             Cursor.lockState = CursorLockMode.Confined;
@@ -139,9 +151,9 @@ public class NiceToHavePlugin : BaseUnityPlugin
         }
 
         var control = device[controlName];
-        if (control == null) 
-        { 
-            return; 
+        if (control == null)
+        {
+            return;
         }
 
         using (StateEvent.From(device, out var stateEvent))
@@ -150,6 +162,11 @@ public class NiceToHavePlugin : BaseUnityPlugin
 
             InputSystem.QueueEvent(stateEvent);
         }
+    }
+
+    public static string CleanMaterialInstanceName(Material material)
+    {
+        return material.name.Replace(" (Instance)", "");
     }
 }
 
@@ -168,6 +185,7 @@ public static class MenuControllerPatch
             return;
         }
 
+        // Storing validation popup prefab when possible
         if (validationPopupPrefab == null)
         {
             GameObject[] gameObjects = Resources.FindObjectsOfTypeAll<GameObject>();
@@ -183,6 +201,7 @@ public static class MenuControllerPatch
             }
         }
 
+        // Prevent menu from being displayed while the validation popup is displayed
         if (validationPopup != null)
         {
             Transform panelTransform = __instance.transform.Find("Panel");
@@ -206,6 +225,7 @@ public static class MenuControllerPatch
             return true;
         }
 
+        // First call, display validation popup instead of actually leaving
         if (!shouldLeave)
         {
             menuControllerInstance = __instance;
@@ -244,10 +264,12 @@ public static class MenuControllerPatch
                 menuControllerInstance = null;
             };
 
+            // Don't call instance method since the popup is visible and we don't want to leave now
             return false;
         }
 
         shouldLeave = false;
+        // Second call to QuitGame after pressing Yes, we want to leave, we're calling the instance method
         return true;
     }
 }
@@ -262,12 +284,14 @@ public static class PlayerActionsControllerPatch
     {
         if (NiceToHavePlugin.EnableAutoLoot.Value)
         {
+            // If the fake input was triggerd during last frame, we're resetting it
             if (_isPressingFakePickupKey)
             {
                 NiceToHavePlugin.FakeInput(Keyboard.current, "e", 0);
                 _isPressingFakePickupKey = false;
             }
 
+            // If an action is available and the activable is an item, we're faking an interaction input to autoloot the item
             ActionDetector actionDetector = __instance.GetComponent<ActionDetector>();
             ActivableBehaviour currentActivable = actionDetector.GetCurrentActivable();
             if (currentActivable != null)
@@ -281,5 +305,74 @@ public static class PlayerActionsControllerPatch
                 }
             }
         }
+    }
+}
+
+[HarmonyPatch(typeof(BuildingSlot))]
+public static class BuildingSlotPatch
+{
+    [HarmonyPatch("ShowPreview")]
+    [HarmonyPrefix]
+    public static bool ShowPreviewFix(ref BuildingSlot __instance)
+    {
+        if (!NiceToHavePlugin.FixPreviewBuildingDisplay.Value)
+        {
+            return true;
+        }
+
+        if (!Traverse.Create(__instance).Field("shown").GetValue<bool>())
+        {
+            BuildingSO[] buildingsData = __instance.GetBuildings();
+            GameObject buildingPreview = Traverse.Create(__instance).Field("buildingPreview").GetValue<GameObject>();
+            if (buildingsData != null && buildingPreview != null)
+            {
+                int i = 0;
+                BuildingGhostBehavior buildingGhostBehavior = buildingPreview.GetComponent<BuildingGhostBehavior>();
+                Renderer renderer;
+                // Looping through the different buildings available to check if one can be built
+                do
+                {
+                    NiceToHavePlugin.CurrentBuildingSlot = __instance;
+                    buildingGhostBehavior.CheckCanBuild(buildingsData[i]);
+                    buildingPreview.SetActive(value: true);
+                    NiceToHavePlugin.CurrentBuildingSlot = null;
+
+                    renderer = Traverse.Create(buildingGhostBehavior).Field("piecesRenderers").GetValue<List<Renderer>>()[0];
+
+                    ++i;
+                } while (NiceToHavePlugin.CleanMaterialInstanceName(renderer.material) != NiceToHavePlugin.CleanMaterialInstanceName(buildingGhostBehavior.CanBuildMaterial) && i < buildingsData.Length);
+            }
+            Traverse.Create(__instance).Field("shown").SetValue(true);
+        }
+
+        // This function replace the original one, we're not calling it
+        return false;
+    }
+}
+[HarmonyPatch(typeof(BuildingManager))]
+public static class BuildingManagerPatch
+{
+    [HarmonyPatch("CheckCost")]
+    [HarmonyPrefix]
+    public static bool CheckCostFix(ref BuildingManager __instance, ref bool __result, BuildingSO buildingSO)
+    {
+        if (!NiceToHavePlugin.FixPreviewBuildingDisplay.Value)
+        {
+            return true;
+        }
+
+        __result = true;
+        if (buildingSO.BuildCost.Length != 0)
+        {
+            // Looping through the different resources needed to determine if we can build
+            for (int i = 0; i < buildingSO.BuildCost.Length; ++i)
+            {
+                float playerResource = Traverse.Create(NiceToHavePlugin.CurrentBuildingSlot).Field("playerData").GetValue<PlayerDataSave>().GetResourceQuantity(buildingSO.BuildCost[i].Resource);
+                __result = __result && (buildingSO.BuildCost[i].Quantity == 0 || playerResource >= (float)buildingSO.BuildCost[i].Quantity);
+            }
+        }
+
+        // This function replace the original one, we're not calling it
+        return false;
     }
 }
