@@ -333,6 +333,7 @@ public static class BuildingSlotPatch
                 do
                 {
                     NiceToHavePlugin.CurrentBuildingSlot = __instance;
+                    //NiceToHavePlugin.Logger.LogInfo($"Building {i}");
                     buildingGhostBehavior.CheckCanBuild(buildingsData[i]);
                     buildingPreview.SetActive(value: true);
                     NiceToHavePlugin.CurrentBuildingSlot = null;
@@ -340,7 +341,9 @@ public static class BuildingSlotPatch
                     renderer = Traverse.Create(buildingGhostBehavior).Field("piecesRenderers").GetValue<List<Renderer>>()[0];
 
                     ++i;
-                } while (NiceToHavePlugin.CleanMaterialInstanceName(renderer.material) != NiceToHavePlugin.CleanMaterialInstanceName(buildingGhostBehavior.CanBuildMaterial) && i < buildingsData.Length);
+                } while (NiceToHavePlugin.CleanMaterialInstanceName(renderer.material) != NiceToHavePlugin.CleanMaterialInstanceName(buildingGhostBehavior.CanBuildMaterial) 
+                && NiceToHavePlugin.CleanMaterialInstanceName(renderer.material) != NiceToHavePlugin.CleanMaterialInstanceName(buildingGhostBehavior.CanBuildDuringWaveMaterial)
+                && i < buildingsData.Length);
             }
             Traverse.Create(__instance).Field("shown").SetValue(true);
         }
@@ -369,6 +372,7 @@ public static class BuildingManagerPatch
             {
                 float playerResource = Traverse.Create(NiceToHavePlugin.CurrentBuildingSlot).Field("playerData").GetValue<PlayerDataSave>().GetResourceQuantity(buildingSO.BuildCost[i].Resource);
                 __result = __result && (buildingSO.BuildCost[i].Quantity == 0 || playerResource >= (float)buildingSO.BuildCost[i].Quantity);
+                //NiceToHavePlugin.Logger.LogInfo($"Resource {i}, needs {(float)buildingSO.BuildCost[i].Quantity}: have {playerResource}");
             }
         }
 
