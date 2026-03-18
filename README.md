@@ -4,7 +4,7 @@ _The features were tested in solo with keyboard + mouse (and rarely with a gamep
 
 ## **Features**
 - _Building_
-  - Show green preview if one of the buildings can be build instead of just checking the first building of the list.
+  - Show green preview if one of the buildings can be built instead of just checking the first building of the list.
 
 - _Cursor_
   - Add ingame crosshair
